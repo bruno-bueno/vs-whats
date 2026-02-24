@@ -9,6 +9,16 @@ Uma extensão que permite visualizar as mensagens do seu WhatsApp diretamente em
 - Sem necessidade de recanear o QR Code a cada uso (os dados da sessão são armazenados em disco na pasta de extensão global).
 - Integração perfeita e design combinando com o VS Code.
 
+## Como Instalar
+
+1. Acesse a página do repositório no GitHub e clique em **Releases** na barra lateral direita.
+2. Baixe a versão mais recente do arquivo terminado em `.vsix` (exemplo: `whatsapp-bot-vscode.vsix`).
+3. Abra o seu Visual Studio Code.
+4. Abra a aba lateral de **Extensões** (atalho `Ctrl+Shift+X` ou `Cmd+Shift+X`).
+5. Clique no menu de "Três Pontinhos" (`...`) que fica no canto superior direito desse painel de extensões.
+6. Clique na opção **"Install from VSIX..."** (Instalar a partir do VSIX).
+7. Selecione o arquivo `.vsix` que você acabou de baixar. E pronto! A extensão estará disponível no seu editor.
+
 ## Como Usar
 
 1. Após a instalação, localize o ícone "WhatsApp" na barra inferior de abas laterais (junto do Explorer).
