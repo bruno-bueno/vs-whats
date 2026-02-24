@@ -2,7 +2,7 @@
   "name": "whatsapp-bot-vscode",
   "displayName": "WhatsApp",
   "description": "WhatsApp Bot no Sidebar do VS Code",
-  "version": "1.0.0",
+  "version": "1.0.7",
   "publisher": "meubot",
   "engines": {
     "vscode": "^1.80.0"
@@ -31,6 +31,7 @@
     ]
   },
   "dependencies": {
+    "puppeteer": "^24.37.5",
     "qrcode": "^1.5.3",
     "whatsapp-web.js": "^1.23.0"
   },

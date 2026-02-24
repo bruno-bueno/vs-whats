@@ -1,0 +1,43 @@
+name: Auto Release VSIX
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Get Version from package.json
+        id: package_version
+        run: echo "VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+
+      - name: Build VSIX Package
+        run: npx @vscode/vsce package -o whatsapp-bot-vscode.vsix
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Versão ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          files: whatsapp-bot-vscode.vsix
+          body: "Release gerado automaticamente a partir do último commit."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
