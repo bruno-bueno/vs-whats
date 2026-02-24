@@ -40,6 +40,9 @@ class WhatsAppViewProvider {
                 vscode.commands.executeCommand('whatsappbot.logout');
             } else if (data.type === 'openChat') {
                 this._currentChatId = data.chatId;
+                if (this._chats[data.chatId]) {
+                    this._chats[data.chatId].unreadCount = 0;
+                }
                 this._updateHtml();
             } else if (data.type === 'backToList') {
                 this._currentChatId = null;
@@ -65,18 +68,35 @@ class WhatsAppViewProvider {
                 id: chatId,
                 name: contactInfo ? contactInfo.name : 'Desconhecido',
                 number: contactInfo ? contactInfo.number : 'Sem número',
-                messages: []
+                messages: [],
+                unreadCount: 0,
+                lastUpdateTime: 0
             };
         }
         
         this._chats[chatId].messages.push(msgObj);
+        this._chats[chatId].lastUpdateTime = Date.now();
+        
+        // Se for mensagem recebida e não estamos com a aba dela aberta, soma no aviso de não-lida
+        if (!msgObj.fromMe && this._currentChatId !== chatId) {
+            this._chats[chatId].unreadCount = (this._chats[chatId].unreadCount || 0) + 1;
+        }
         
         // Limita a 100 mensagens no histórico por conversa para não travar
         if (this._chats[chatId].messages.length > 100) {
             this._chats[chatId].messages.shift();
         }
 
-        this._updateHtml();
+        if (!this._view) return;
+
+        // Se estou na tela da LISTA, recarrego a tela inteira para atualizar os avisos
+        if (!this._currentChatId) {
+            this._updateHtml();
+        } 
+        // Se eu estou DENTRO deste chat específico, não recarrego o HTML para não apagar o formulário em que a pessoa digita. Apenas injeto o balão.
+        else if (this._currentChatId === chatId) {
+            this._view.webview.postMessage({ type: 'appendMessage', message: msgObj });
+        }
     }
 
     setStatus(status, qr = null) {
@@ -128,20 +148,27 @@ class WhatsAppViewProvider {
                 
                 let chatsListHtml = chatsArray.length === 0 
                     ? '<div style="text-align:center; margin-top:30px; opacity:0.6; font-size:13px;">Nenhuma conversa ainda... Aguardando mensagens.</div>'
-                    : chatsArray.map(c => {
+                    : chatsArray.sort((a, b) => b.lastUpdateTime - a.lastUpdateTime).map(c => {
                         const lastMsg = c.messages.length > 0 ? c.messages[c.messages.length - 1] : { texto: '', hora: '' };
                         const preview = lastMsg.texto.length > 30 ? lastMsg.texto.substring(0, 30) + '...' : lastMsg.texto;
                         
+                        const unreadBadge = c.unreadCount > 0 
+                            ? `<span style="background: #25D366; color: #111B21; border-radius: 50%; padding: 2px 6px; font-size: 10px; font-weight: bold; margin-left: auto;">${c.unreadCount}</span>` 
+                            : '';
+
                         return `
                         <div class="chat-item" onclick="openChat('${c.id}')">
                             <div class="chat-item-header">
                                 <strong>${c.name}</strong>
-                                <span class="chat-time">${lastMsg.hora}</span>
+                                <span class="chat-time" style="color: ${c.unreadCount > 0 ? '#25D366' : 'inherit'}; font-weight: ${c.unreadCount > 0 ? 'bold' : 'normal'}">${lastMsg.hora}</span>
                             </div>
-                            <div class="chat-preview">${lastMsg.fromMe ? '✓ ' : ''}${preview}</div>
+                            <div class="chat-preview" style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-weight: ${c.unreadCount > 0 ? 'bold' : 'normal'}; color: ${c.unreadCount > 0 ? 'var(--vscode-foreground)' : 'inherit'};">${lastMsg.fromMe ? '✓ ' : ''}${preview}</span>
+                                ${unreadBadge}
+                            </div>
                         </div>
                         `;
-                    }).reverse().join(''); // Para mostrar os mais recentes em cima (pode não ser perfeitamente ordenado pelo tempo puro, mas ajuda)
+                    }).join('');
 
                 content = `
                     <div style="display:flex; flex-direction:column; height: 100vh;">
@@ -283,6 +310,42 @@ class WhatsAppViewProvider {
                     // Scroll automático para a última mensagem
                     const container = document.getElementById('msgContainer');
                     if (container) container.scrollTop = container.scrollHeight;
+
+                    // Novo Event Listener Otimizado Dinâmico
+                    window.addEventListener('message', event => {
+                        const data = event.data;
+                        if (data.type === 'appendMessage') {
+                            const m = data.message;
+                            const alignment = m.fromMe ? 'align-self: flex-end;' : 'align-self: flex-start;';
+                            const bgColor = m.fromMe ? '#005C4B' : 'var(--vscode-editor-inactiveSelectionBackground)';
+                            const textColor = m.fromMe ? '#E9EDEF' : 'var(--vscode-foreground)';
+                            const borderRadius = m.fromMe ? '8px 8px 0px 8px' : '8px 8px 8px 0px';
+                            
+                            const imgHtml = m.imagemBase64 ? \`<img src="\${m.imagemBase64}" style="max-width: 100%; max-height: 250px; border-radius: 6px; margin-bottom: 6px; display: block;" />\` : '';
+                            const senderHtml = m.senderName ? \`<div style="font-size: 11px; font-weight: bold; color: #25D366; margin-bottom: 4px;">~ \${m.senderName}</div>\` : '';
+                            
+                            const msgDiv = document.createElement('div');
+                            msgDiv.style.cssText = \`display:flex; flex-direction:column; \${alignment} max-width: 85%; margin-bottom: 8px;\`;
+                            msgDiv.innerHTML = \`
+                                <div style="background: \${bgColor}; color: \${textColor}; padding: 8px 12px; border-radius: \${borderRadius}; font-size: 13px; line-height: 1.4; word-wrap: break-word;">
+                                    \${senderHtml}
+                                    \${imgHtml}
+                                    \${m.texto}
+                                    <div style="font-size: 10px; opacity: 0.6; text-align: right; margin-top: 4px;">
+                                        \${m.hora}
+                                    </div>
+                                </div>
+                            \`;
+                            if (container) {
+                                // Apaga o vazio caso esteja na primeira mensagem
+                                if (container.children.length === 1 && container.innerText.includes('Envie uma mensagem')) {
+                                    container.innerHTML = '';
+                                }
+                                container.appendChild(msgDiv);
+                                container.scrollTop = container.scrollHeight;
+                            }
+                        }
+                    });
                 </script>
             </body>
             </html>
