@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-bot-vscode",
-  "displayName": "WhatsApp",
-  "description": "WhatsApp Bot no Sidebar do VS Code",
+  "displayName": "Code Notifier",
+  "description": "Integração de notificações em tempo real no VS Code",
   "version": "1.0.12",
   "publisher": "meubot",
   "engines": {
@@ -15,18 +15,18 @@
         {
           "type": "webview",
           "id": "whatsapp.chatView",
-          "name": "WhatsApp"
+          "name": "Notificações"
         }
       ]
     },
     "commands": [
       {
         "command": "whatsappbot.start",
-        "title": "WhatsApp: Iniciar Bot"
+        "title": "Notifier: Iniciar"
       },
       {
         "command": "whatsappbot.stop",
-        "title": "WhatsApp: Parar Bot"
+        "title": "Notifier: Parar"
       }
     ]
   },

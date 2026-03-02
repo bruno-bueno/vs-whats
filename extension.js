@@ -1,5 +1,5 @@
 const vscode = require('vscode');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
@@ -55,6 +55,28 @@ class WhatsAppViewProvider {
                         // A interface será atualizada automaticamente pelo evento "message_create"
                     } catch (err) {
                         vscode.window.showErrorMessage('Erro ao enviar mensagem: ' + err.message);
+                    }
+                }
+            } else if (data.type === 'sendFile') {
+                if (client && this._currentChatId) {
+                    const fileUri = await vscode.window.showOpenDialog({
+                        canSelectMany: false,
+                        openLabel: 'Enviar Arquivo',
+                        filters: {
+                            'Mídia e Arquivos': ['png', 'jpg', 'jpeg', 'mp4', 'pdf', 'mp3', 'webp', 'gif']
+                        }
+                    });
+
+                    if (fileUri && fileUri[0]) {
+                        try {
+                            const filePath = fileUri[0].fsPath;
+                            const media = MessageMedia.fromFilePath(filePath);
+                            await client.sendMessage(this._currentChatId, media);
+                            vscode.window.showInformationMessage('Arquivo enviado com sucesso!');
+                            // O evento message_create também preencherá a tela automaticamente
+                        } catch (err) {
+                            vscode.window.showErrorMessage('Erro ao enviar arquivo: ' + err.message);
+                        }
                     }
                 }
             }
@@ -225,6 +247,7 @@ class WhatsAppViewProvider {
                         
                         <!-- Barra inferior de Enviar Mensagem -->
                         <div style="padding: 10px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-editor-background); display:flex; gap:8px;">
+                            <button id="attachBtn" class="btn default-btn" style="padding: 8px;" title="Anexar Arquivo">📎</button>
                             <input type="text" id="chatInput" placeholder="Digite uma mensagem..." style="flex:1; padding:8px; border-radius:4px; border:1px solid var(--vscode-input-border); background:var(--vscode-input-background); color:var(--vscode-input-foreground);" />
                             <button id="sendBtn" class="btn primary-btn">\u27A4</button>
                         </div>
@@ -289,6 +312,7 @@ class WhatsAppViewProvider {
                     // Funções Envio
                     const chatInput = document.getElementById('chatInput');
                     const sendBtn = document.getElementById('sendBtn');
+                    const attachBtn = document.getElementById('attachBtn');
                     
                     function sendMessage() {
                         const text = chatInput.value;
@@ -305,6 +329,12 @@ class WhatsAppViewProvider {
                         });
                         // Auto-focus no input quando abre a conversa
                         chatInput.focus();
+                    }
+
+                    if (attachBtn) {
+                        attachBtn.addEventListener('click', () => {
+                            vscode.postMessage({ type: 'sendFile' });
+                        });
                     }
 
                     // Scroll automático para a última mensagem
