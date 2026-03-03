@@ -19,6 +19,32 @@ class WhatsAppViewProvider {
         // Armazena as conversas: { "5511999999999@c.us": { name: "João", number: "11999999999", messages: [] } }
         this._chats = {};
         this._currentChatId = null; // ID da conversa selecionada no momento
+        
+        this._loadHistory();
+    }
+
+    _getHistoryFilePath() {
+        return path.join(this._context.globalStorageUri.fsPath, '.wwebjs_history.json');
+    }
+
+    _loadHistory() {
+        try {
+            const historyPath = this._getHistoryFilePath();
+            if (fs.existsSync(historyPath)) {
+                this._chats = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+            }
+        } catch (e) {
+            console.error('Erro ao ler histórico:', e);
+            this._chats = {};
+        }
+    }
+
+    _saveHistory() {
+        try {
+            fs.writeFileSync(this._getHistoryFilePath(), JSON.stringify(this._chats));
+        } catch (e) {
+            console.error('Erro ao salvar histórico:', e);
+        }
     }
 
     resolveWebviewView(webviewView, context, token) {
@@ -38,10 +64,54 @@ class WhatsAppViewProvider {
                 vscode.commands.executeCommand('whatsappbot.stop');
             } else if (data.type === 'logout') {
                 vscode.commands.executeCommand('whatsappbot.logout');
+            } else if (data.type === 'newChat') {
+                if (!client) return;
+                try {
+                    vscode.window.showInformationMessage('Carregando contatos salvos... Pode demorar alguns segundos.');
+                    const contacts = await client.getContacts();
+                    const savedContacts = contacts
+                        .filter(c => c.isMyContact && c.name && !c.isGroup)
+                        .map(c => ({
+                            label: '👤 ' + c.name,
+                            description: c.number,
+                            chatId: c.id._serialized,
+                            contactInfo: { name: c.name, number: c.number }
+                        }))
+                        .sort((a, b) => a.label.localeCompare(b.label));
+
+                    if (savedContacts.length === 0) {
+                        vscode.window.showWarningMessage('Nenhum contato salvo encontrado no aparelho.');
+                        return;
+                    }
+
+                    const selected = await vscode.window.showQuickPick(savedContacts, {
+                        placeHolder: 'Pesquise ou selecione um contato para iniciar a conversa',
+                        matchOnDescription: true
+                    });
+
+                    if (selected) {
+                        if (!this._chats[selected.chatId]) {
+                            this._chats[selected.chatId] = {
+                                id: selected.chatId,
+                                name: selected.contactInfo.name,
+                                number: selected.contactInfo.number,
+                                messages: [],
+                                unreadCount: 0,
+                                lastUpdateTime: Date.now()
+                            };
+                            this._saveHistory();
+                        }
+                        this._currentChatId = selected.chatId;
+                        this._updateHtml();
+                    }
+                } catch (error) {
+                    vscode.window.showErrorMessage('Erro ao carregar contatos: ' + error.message);
+                }
             } else if (data.type === 'openChat') {
                 this._currentChatId = data.chatId;
                 if (this._chats[data.chatId]) {
                     this._chats[data.chatId].unreadCount = 0;
+                    this._saveHistory();
                 }
                 this._updateHtml();
             } else if (data.type === 'backToList') {
@@ -119,6 +189,8 @@ class WhatsAppViewProvider {
         else if (this._currentChatId === chatId) {
             this._view.webview.postMessage({ type: 'appendMessage', message: msgObj });
         }
+        
+        this._saveHistory();
     }
 
     setStatus(status, qr = null) {
@@ -127,6 +199,7 @@ class WhatsAppViewProvider {
         if (status === 'Aguardando QR') {
             this._chats = {}; 
             this._currentChatId = null;
+            this._saveHistory();
         }
         this._updateHtml();
     }
@@ -196,7 +269,10 @@ class WhatsAppViewProvider {
                     <div style="display:flex; flex-direction:column; height: 100vh;">
                         <div class="header">
                             <span style="color: #25D366; font-weight:bold;">✅ Conectado</span>
-                            <button id="stopBtn" class="btn default-btn btn-small">Sair</button>
+                            <div>
+                                <button id="newChatBtn" class="btn primary-btn btn-small" title="Nova Conversa">➕ Contato</button>
+                                <button id="stopBtn" class="btn default-btn btn-small" style="margin-left:5px;">Sair</button>
+                            </div>
                         </div>
                         <div style="flex:1; overflow-y:auto; padding: 10px;">
                             ${chatsListHtml}
@@ -300,6 +376,9 @@ class WhatsAppViewProvider {
                     
                     const logoutBtn = document.getElementById('logoutBtn');
                     if(logoutBtn) logoutBtn.addEventListener('click', () => vscode.postMessage({ type: 'logout' }));
+                    
+                    const newChatBtn = document.getElementById('newChatBtn');
+                    if(newChatBtn) newChatBtn.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
                     
                     // Funções Navegação
                     function openChat(id) {
@@ -521,9 +600,11 @@ function activate(context) {
         // Remove as pastas de cache agressivamente para forçar que a sessão velha seja resetada e mostre um novo QR Code!
         const authPath = path.join(context.globalStorageUri.fsPath, '.wwebjs_auth');
         const cachePath = path.join(context.globalStorageUri.fsPath, '.wwebjs_cache');
+        const historyPath = path.join(context.globalStorageUri.fsPath, '.wwebjs_history.json');
         try {
             if (fs.existsSync(authPath)) fs.rmSync(authPath, { recursive: true, force: true });
             if (fs.existsSync(cachePath)) fs.rmSync(cachePath, { recursive: true, force: true });
+            if (fs.existsSync(historyPath)) fs.rmSync(historyPath, { force: true });
             vscode.window.showInformationMessage('Sessão limpa perfeitamente! Inicie novamente para gerar o novo QR.');
         } catch(e) {
             console.error('Erro ao limpar cache', e);
