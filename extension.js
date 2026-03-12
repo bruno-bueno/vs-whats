@@ -64,6 +64,8 @@ class WhatsAppViewProvider {
                 vscode.commands.executeCommand('whatsappbot.stop');
             } else if (data.type === 'logout') {
                 vscode.commands.executeCommand('whatsappbot.logout');
+            } else if (data.type === 'reconnect') {
+                vscode.commands.executeCommand('whatsappbot.reconnect');
             } else if (data.type === 'newChat') {
                 if (!client) return;
                 try {
@@ -196,11 +198,7 @@ class WhatsAppViewProvider {
     setStatus(status, qr = null) {
         this._status = status;
         this._qrImageBase64 = qr;
-        if (status === 'Aguardando QR') {
-            this._chats = {}; 
-            this._currentChatId = null;
-            this._saveHistory();
-        }
+        // Removido limpeza de cache agressiva ao 'Aguardar QR', permitindo Reconexão suave!
         this._updateHtml();
     }
 
@@ -270,8 +268,9 @@ class WhatsAppViewProvider {
                         <div class="header">
                             <span style="color: #25D366; font-weight:bold;">✅ Conectado</span>
                             <div>
-                                <button id="newChatBtn" class="btn primary-btn btn-small" title="Nova Conversa">➕ Contato</button>
-                                <button id="stopBtn" class="btn default-btn btn-small" style="margin-left:5px;">Sair</button>
+                                <button id="newChatBtn" class="btn primary-btn btn-small" title="Nova Conversa">➕</button>
+                                <button id="reconnectBtn" class="btn default-btn btn-small" style="margin-left:2px;" title="Reconectar Sistema">🔄</button>
+                                <button id="stopBtn" class="btn default-btn btn-small" style="margin-left:2px;">Sair</button>
                             </div>
                         </div>
                         <div style="flex:1; overflow-y:auto; padding: 10px;">
@@ -314,6 +313,7 @@ class WhatsAppViewProvider {
                         <div class="header" style="justify-content:flex-start; gap:10px;">
                             <button onclick="backToList()" class="btn default-btn btn-small">←</button>
                             <strong style="flex:1; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">${currentChat.name}</strong>
+                            <button id="reconnectBtnChat" class="btn default-btn btn-small" title="Reconectar Sistema">🔄</button>
                         </div>
                         
                         <!-- Corpo das Mensagens -->
@@ -376,6 +376,12 @@ class WhatsAppViewProvider {
                     
                     const logoutBtn = document.getElementById('logoutBtn');
                     if(logoutBtn) logoutBtn.addEventListener('click', () => vscode.postMessage({ type: 'logout' }));
+                    
+                    const reconnectBtn = document.getElementById('reconnectBtn');
+                    if(reconnectBtn) reconnectBtn.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }));
+
+                    const reconnectBtnChat = document.getElementById('reconnectBtnChat');
+                    if(reconnectBtnChat) reconnectBtnChat.addEventListener('click', () => vscode.postMessage({ type: 'reconnect' }));
                     
                     const newChatBtn = document.getElementById('newChatBtn');
                     if(newChatBtn) newChatBtn.addEventListener('click', () => vscode.postMessage({ type: 'newChat' }));
@@ -585,16 +591,59 @@ function activate(context) {
 
     let stopBotComando = vscode.commands.registerCommand('whatsappbot.stop', async () => {
         if (client) {
-            await client.destroy();
+            try { await client.destroy(); } catch (e) {}
             client = null;
             provider.setStatus('Desconectado');
         }
+    });
+
+    let reconnectBotComando = vscode.commands.registerCommand('whatsappbot.reconnect', async () => {
+        vscode.window.showInformationMessage('🔄 Reconectando ao WhatsApp e limpando processos...');
+        provider.setStatus('Aguardando QR'); // Dispara spinner mas sem apagar mensagens!
+        
+        if (client) {
+            try { 
+                if (client.pupBrowser) {
+                    try {
+                        const childProcess = client.pupBrowser.process();
+                        if (childProcess) {
+                            process.kill(childProcess.pid, 'SIGKILL');
+                        }
+                    } catch (e) {}
+                    try { await client.pupBrowser.close(); } catch (e) {}
+                }
+                const oldClient = client;
+                client = null;
+                try { await oldClient.destroy(); } catch(e) {}
+            } catch (e) {}
+        }
+        client = null;
+        
+        // Remove as "Travas" (Locks) criadas pelo Chromium que impedem a recriação numa quebra abrupta
+        const singletonLock = path.join(context.globalStorageUri.fsPath, '.wwebjs_auth', 'session', 'SingletonLock');
+        const singletonCookie = path.join(context.globalStorageUri.fsPath, '.wwebjs_auth', 'session', 'SingletonCookie');
+        try {
+            if (fs.existsSync(singletonLock)) fs.unlinkSync(singletonLock);
+            if (fs.existsSync(singletonCookie)) fs.unlinkSync(singletonCookie);
+        } catch (e) {}
+        
+        // Tenta reconectar logo após o wipe
+        setTimeout(() => {
+            vscode.commands.executeCommand('whatsappbot.start');
+        }, 1500);
     });
 
     let logoutBotComando = vscode.commands.registerCommand('whatsappbot.logout', async () => {
         if (client) {
             try { await client.destroy(); } catch (e) {}
             client = null;
+        }
+        
+        // Agora limpamos forçadamente as conversas da memória (já que tirámos do Aguarda QR)
+        if (provider) {
+            provider._chats = {};
+            provider._currentChatId = null;
+            provider._saveHistory();
         }
         
         // Remove as pastas de cache agressivamente para forçar que a sessão velha seja resetada e mostre um novo QR Code!
@@ -613,7 +662,7 @@ function activate(context) {
         provider.setStatus('Desconectado');
     });
 
-    context.subscriptions.push(startBotComando, stopBotComando, logoutBotComando);
+    context.subscriptions.push(startBotComando, stopBotComando, logoutBotComando, reconnectBotComando);
 }
 
 function deactivate() {
