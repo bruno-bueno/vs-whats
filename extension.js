@@ -19,6 +19,10 @@ class WhatsAppViewProvider {
         // Armazena as conversas: { "5511999999999@c.us": { name: "João", number: "11999999999", messages: [] } }
         this._chats = {};
         this._currentChatId = null; // ID da conversa selecionada no momento
+
+        // Fila de mensagens para envio (evita inversão e garante entrega)
+        this._messageQueue = [];
+        this._isProcessingQueue = false;
         
         this._loadHistory();
     }
@@ -41,10 +45,62 @@ class WhatsAppViewProvider {
 
     _saveHistory() {
         try {
-            fs.writeFileSync(this._getHistoryFilePath(), JSON.stringify(this._chats));
+            // OTIMIZAÇÃO: Gravando de forma assíncrona para não prender o Garbage Collector (Limpador de Memória)
+            const filePath = this._getHistoryFilePath();
+            
+            // Criamos uma cópia sem as imagens em base64 gigantes para o JSON não inchar infinitamente!
+            const cleanChats = JSON.parse(JSON.stringify(this._chats));
+            Object.keys(cleanChats).forEach(chatId => {
+                cleanChats[chatId].messages.forEach(msg => {
+                    if (msg.imagemBase64) {
+                        msg.texto = '[Imagem Limpa da Memória Morte] - ' + msg.texto;
+                        delete msg.imagemBase64; 
+                    }
+                });
+            });
+
+            fs.promises.writeFile(filePath, JSON.stringify(cleanChats)).catch(e => console.error(e));
         } catch (e) {
             console.error('Erro ao salvar histórico:', e);
         }
+    }
+
+    // Gerenciamento de Fila de Mensagens (Garante ordem e entrega)
+    async _enqueueMessage(chatId, content) {
+        this._messageQueue.push({ chatId, content });
+        this._processQueue();
+    }
+
+    async _processQueue() {
+        // Só processa se não estiver já processando, houver itens e o cliente estiver conectado
+        if (this._isProcessingQueue || this._messageQueue.length === 0 || !client || this._status !== 'Conectado') return;
+
+        this._isProcessingQueue = true;
+
+        while (this._messageQueue.length > 0) {
+            const { chatId, content } = this._messageQueue[0];
+            
+            try {
+                if (!client || this._status !== 'Conectado') break;
+                
+                // Envia a mensagem (texto ou mídia)
+                await client.sendMessage(chatId, content);
+                
+                // Remove da fila apenas APÓS o sucesso no envio
+                this._messageQueue.shift();
+            } catch (err) {
+                console.error('Erro ao processar fila de mensagens:', err);
+                
+                // Se der erro, aguarda 2 segundos e tenta novamente o MESMO item (mantendo a ordem FIFO)
+                vscode.window.setStatusBarMessage('WhatsApp: Erro no envio, tentando novamente...', 3000);
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Se o cliente desconectou no meio do caminho, paramos o loop
+                if (!client || this._status !== 'Conectado') break;
+            }
+        }
+
+        this._isProcessingQueue = false;
     }
 
     resolveWebviewView(webviewView, context, token) {
@@ -120,17 +176,12 @@ class WhatsAppViewProvider {
                 this._currentChatId = null;
                 this._updateHtml();
             } else if (data.type === 'sendMessage') {
-                if (client && this._currentChatId && data.text.trim()) {
-                    try {
-                        // Envia a mensagem pela API real do WhatsApp
-                        await client.sendMessage(this._currentChatId, data.text);
-                        // A interface será atualizada automaticamente pelo evento "message_create"
-                    } catch (err) {
-                        vscode.window.showErrorMessage('Erro ao enviar mensagem: ' + err.message);
-                    }
+                if (this._currentChatId && data.text.trim()) {
+                    // Adiciona na fila para garantir a ordem (não inverter)
+                    this._enqueueMessage(this._currentChatId, data.text);
                 }
             } else if (data.type === 'sendFile') {
-                if (client && this._currentChatId) {
+                if (this._currentChatId) {
                     const fileUri = await vscode.window.showOpenDialog({
                         canSelectMany: false,
                         openLabel: 'Enviar Arquivo',
@@ -143,11 +194,10 @@ class WhatsAppViewProvider {
                         try {
                             const filePath = fileUri[0].fsPath;
                             const media = MessageMedia.fromFilePath(filePath);
-                            await client.sendMessage(this._currentChatId, media);
-                            vscode.window.showInformationMessage('Arquivo enviado com sucesso!');
-                            // O evento message_create também preencherá a tela automaticamente
+                            this._enqueueMessage(this._currentChatId, media);
+                            // O evento message_create preencherá a tela automaticamente quando for enviado de fato
                         } catch (err) {
-                            vscode.window.showErrorMessage('Erro ao enviar arquivo: ' + err.message);
+                            vscode.window.showErrorMessage('Erro ao processar arquivo: ' + err.message);
                         }
                     }
                 }
@@ -176,8 +226,8 @@ class WhatsAppViewProvider {
             this._chats[chatId].unreadCount = (this._chats[chatId].unreadCount || 0) + 1;
         }
         
-        // Limita a 100 mensagens no histórico por conversa para não travar
-        if (this._chats[chatId].messages.length > 100) {
+        // Limita a 25 mensagens no histórico por conversa em vez de 100 para estripar consumo de RAM
+        if (this._chats[chatId].messages.length > 25) {
             this._chats[chatId].messages.shift();
         }
 
@@ -499,7 +549,18 @@ function activate(context) {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    // NOVOS ARGS PARANDO O CONSUMO ABSURDO DE RAM:
+                    '--disable-software-rasterizer',
+                    '--disable-extensions',
+                    '--mute-audio',
+                    '--disable-background-networking',
+                    '--disable-default-apps',
+                    '--disable-sync',
+                    '--disable-translate',
+                    '--metrics-recording-only',
+                    '--disk-cache-size=10485760',
+                    '--js-flags=--max-old-space-size=256' // Limita o JS do Chrome a 256MB apenas
                 ],
                 timeout: 60000 
             }
@@ -522,6 +583,9 @@ function activate(context) {
             
             provider.setStatus('Conectado');
             vscode.window.showInformationMessage('WhatsApp Bot conectado e lendo mensagens!');
+
+            // Dispara o processamento da fila caso existam mensagens pendentes
+            provider._processQueue();
         });
 
         // Evento que capita QUALQUER mensagem criada (tanto recebida, quanto enviada de outro aparelho)
@@ -643,6 +707,7 @@ function activate(context) {
         if (provider) {
             provider._chats = {};
             provider._currentChatId = null;
+            provider._messageQueue = []; // Limpa a fila ao deslogar
             provider._saveHistory();
         }
         
